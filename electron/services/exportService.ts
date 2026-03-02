@@ -1818,6 +1818,18 @@ class ExportService {
     const exportMediaEnabled = options.exportMedia === true &&
       Boolean(options.exportImages || options.exportVoices || options.exportVideos || options.exportEmojis)
     const outputDir = path.dirname(outputPath)
+    const rawWriteLayout = this.configService.get('exportWriteLayout')
+    const writeLayout = rawWriteLayout === 'A' || rawWriteLayout === 'B' || rawWriteLayout === 'C'
+      ? rawWriteLayout
+      : 'A'
+    // A: type-first layout, text exports are placed under `texts/`, media is placed at sibling type directories.
+    if (writeLayout === 'A' && path.basename(outputDir) === 'texts') {
+      return {
+        exportMediaEnabled,
+        mediaRootDir: outputDir,
+        mediaRelativePrefix: '..'
+      }
+    }
     const outputBaseName = path.basename(outputPath, path.extname(outputPath))
     const useSharedMediaLayout = options.sessionLayout === 'shared'
     const mediaRelativePrefix = useSharedMediaLayout
@@ -4809,9 +4821,8 @@ class ExportService {
       const writeLayout = rawWriteLayout === 'A' || rawWriteLayout === 'B' || rawWriteLayout === 'C'
         ? rawWriteLayout
         : 'A'
-      const shouldUseTextTypeDir = writeLayout === 'A' && !exportMediaEnabled
-      const exportBaseDir = shouldUseTextTypeDir
-        ? path.join(outputDir, '聊天文本')
+      const exportBaseDir = writeLayout === 'A'
+        ? path.join(outputDir, 'texts')
         : outputDir
       if (!fs.existsSync(exportBaseDir)) {
         fs.mkdirSync(exportBaseDir, { recursive: true })
