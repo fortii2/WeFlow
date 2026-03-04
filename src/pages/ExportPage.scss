@@ -1115,7 +1115,7 @@
 }
 
 .table-wrap {
-  --contacts-message-col-width: 92px;
+  --contacts-message-col-width: 420px;
   --contacts-action-col-width: 172px;
   overflow: hidden;
   border: 1px solid var(--border-color);
@@ -1259,6 +1259,9 @@
     width: var(--contacts-message-col-width);
     text-align: right;
     flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .contacts-list-header-actions {
@@ -1378,25 +1381,56 @@
     width: var(--contacts-message-col-width);
     min-width: var(--contacts-message-col-width);
     display: flex;
-    align-items: flex-end;
-    justify-content: center;
+    align-items: center;
+    justify-content: flex-end;
     flex-shrink: 0;
     text-align: right;
   }
 
+  .row-message-stats {
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+    align-items: baseline;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  .row-message-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 0;
+
+    .label {
+      color: var(--text-tertiary);
+      flex-shrink: 0;
+    }
+
+    &.total .label {
+      color: var(--text-secondary);
+    }
+  }
+
   .row-message-count-value {
     margin: 0;
-    font-size: 13px;
-    line-height: 1.2;
+    font-size: 12px;
+    line-height: 1.1;
     color: var(--text-primary);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
 
     &.muted {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 500;
       color: var(--text-tertiary);
     }
+  }
+
+  .row-message-stat.total .row-message-count-value {
+    font-size: 13px;
   }
 }
 
@@ -2317,7 +2351,7 @@
 
 @media (max-width: 720px) {
   .table-wrap {
-    --contacts-message-col-width: 66px;
+    --contacts-message-col-width: 280px;
     --contacts-action-col-width: 148px;
   }
 
@@ -2332,6 +2366,22 @@
 
   .table-wrap .row-message-count {
     min-width: var(--contacts-message-col-width);
+  }
+
+  .table-wrap .row-message-stats {
+    gap: 6px;
+  }
+
+  .table-wrap .row-message-stat {
+    font-size: 10px;
+  }
+
+  .table-wrap .row-message-count-value {
+    font-size: 11px;
+  }
+
+  .table-wrap .row-message-stat.total .row-message-count-value {
+    font-size: 12px;
   }
 
   .diag-panel-header {

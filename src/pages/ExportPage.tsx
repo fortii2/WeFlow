@@ -468,6 +468,9 @@ const DEFAULT_CONTACTS_LOAD_TIMEOUT_MS = 3000
 const EXPORT_CARD_DIAG_MAX_FRONTEND_LOGS = 1500
 const EXPORT_CARD_DIAG_STALL_MS = 3200
 const EXPORT_CARD_DIAG_POLL_INTERVAL_MS = 1200
+const EXPORT_REENTER_SESSION_SOFT_REFRESH_MS = 5 * 60 * 1000
+const EXPORT_REENTER_CONTACTS_SOFT_REFRESH_MS = 5 * 60 * 1000
+const EXPORT_REENTER_SNS_SOFT_REFRESH_MS = 3 * 60 * 1000
 type SessionDataSource = 'cache' | 'network' | null
 type ContactsDataSource = 'cache' | 'network' | null
 
@@ -526,6 +529,14 @@ interface SessionExportMetric {
   groupMyMessages?: number
   groupActiveSpeakers?: number
   groupMutualFriends?: number
+}
+
+interface SessionContentMetric {
+  totalMessages?: number
+  voiceMessages?: number
+  imageMessages?: number
+  videoMessages?: number
+  emojiMessages?: number
 }
 
 interface SessionExportCacheMeta {
@@ -856,6 +867,8 @@ function ExportPage() {
   const [avatarCacheUpdatedAt, setAvatarCacheUpdatedAt] = useState<number | null>(null)
   const [sessionMessageCounts, setSessionMessageCounts] = useState<Record<string, number>>({})
   const [isLoadingSessionCounts, setIsLoadingSessionCounts] = useState(false)
+  const [sessionContentMetrics, setSessionContentMetrics] = useState<Record<string, SessionContentMetric>>({})
+  const [isLoadingSessionContentStats, setIsLoadingSessionContentStats] = useState(false)
   const [contactsListScrollTop, setContactsListScrollTop] = useState(0)
   const [contactsListViewportHeight, setContactsListViewportHeight] = useState(480)
   const [contactsLoadTimeoutMs, setContactsLoadTimeoutMs] = useState(DEFAULT_CONTACTS_LOAD_TIMEOUT_MS)
@@ -942,10 +955,16 @@ function ExportPage() {
   const contactsAvatarCacheRef = useRef<Record<string, configService.ContactsAvatarCacheEntry>>({})
   const contactsListRef = useRef<HTMLDivElement>(null)
   const detailRequestSeqRef = useRef(0)
+  const sessionsRef = useRef<SessionRow[]>([])
+  const contactsListSizeRef = useRef(0)
+  const contactsUpdatedAtRef = useRef<number | null>(null)
+  const sessionsHydratedAtRef = useRef(0)
+  const snsStatsHydratedAtRef = useRef(0)
   const inProgressSessionIdsRef = useRef<string[]>([])
   const activeTaskCountRef = useRef(0)
   const hasBaseConfigReadyRef = useRef(false)
   const sessionCountRequestIdRef = useRef(0)
+  const sessionContentStatsRequestIdRef = useRef(0)
   const activeTabRef = useRef<ConversationTab>('private')
 
   const appendFrontendDiagLog = useCallback((entry: ExportCardDiagLogEntry) => {
@@ -1175,11 +1194,15 @@ function ExportPage() {
     void (async () => {
       const scopeKey = await ensureExportCacheScope()
       if (cancelled) return
+      let cachedContactsCount = 0
+      let cachedContactsUpdatedAt = 0
       try {
         const [cacheItem, avatarCacheItem] = await Promise.all([
           configService.getContactsListCache(scopeKey),
           configService.getContactsAvatarCache(scopeKey)
         ])
+        cachedContactsCount = Array.isArray(cacheItem?.contacts) ? cacheItem.contacts.length : 0
+        cachedContactsUpdatedAt = Number(cacheItem?.updatedAt || 0)
         const avatarCacheMap = avatarCacheItem?.avatars || {}
         contactsAvatarCacheRef.current = avatarCacheMap
         setAvatarCacheUpdatedAt(avatarCacheItem?.updatedAt || null)
@@ -1198,7 +1221,15 @@ function ExportPage() {
         console.error('读取导出页联系人缓存失败:', error)
       }
 
-      if (!cancelled) {
+      const latestContactsUpdatedAt = Math.max(
+        Number(contactsUpdatedAtRef.current || 0),
+        cachedContactsUpdatedAt
+      )
+      const hasFreshContactSnapshot = (contactsListSizeRef.current > 0 || cachedContactsCount > 0) &&
+        latestContactsUpdatedAt > 0 &&
+        Date.now() - latestContactsUpdatedAt <= EXPORT_REENTER_CONTACTS_SOFT_REFRESH_MS
+
+      if (!cancelled && !hasFreshContactSnapshot) {
         void loadContactsList({ scopeKey })
       }
     })()
@@ -1237,6 +1268,18 @@ function ExportPage() {
   useEffect(() => {
     tasksRef.current = tasks
   }, [tasks])
+
+  useEffect(() => {
+    sessionsRef.current = sessions
+  }, [sessions])
+
+  useEffect(() => {
+    contactsListSizeRef.current = contactsList.length
+  }, [contactsList.length])
+
+  useEffect(() => {
+    contactsUpdatedAtRef.current = contactsUpdatedAt
+  }, [contactsUpdatedAt])
 
   useEffect(() => {
     if (!expandedPerfTaskId) return
@@ -1314,6 +1357,7 @@ function ExportPage() {
           totalPosts: cachedSnsStats.totalPosts || 0,
           totalFriends: cachedSnsStats.totalFriends || 0
         })
+        snsStatsHydratedAtRef.current = Date.now()
         hasSeededSnsStatsRef.current = true
         setHasSeededSnsStats(true)
       }
@@ -1352,6 +1396,7 @@ function ExportPage() {
         totalFriends: Number.isFinite(next.totalFriends) ? Math.max(0, Math.floor(next.totalFriends)) : 0
       }
       setSnsStats(normalized)
+      snsStatsHydratedAtRef.current = Date.now()
       hasSeededSnsStatsRef.current = true
       setHasSeededSnsStats(true)
       if (exportCacheScopeReadyRef.current) {
@@ -1389,6 +1434,139 @@ function ExportPage() {
     }
   }, [])
 
+  const mergeSessionContentMetrics = useCallback((input: Record<string, SessionExportMetric | SessionContentMetric | undefined>) => {
+    const entries = Object.entries(input)
+    if (entries.length === 0) return
+
+    const nextMessageCounts: Record<string, number> = {}
+    const nextMetrics: Record<string, SessionContentMetric> = {}
+
+    for (const [sessionIdRaw, metricRaw] of entries) {
+      const sessionId = String(sessionIdRaw || '').trim()
+      if (!sessionId || !metricRaw) continue
+      const totalMessages = normalizeMessageCount(metricRaw.totalMessages)
+      const voiceMessages = normalizeMessageCount(metricRaw.voiceMessages)
+      const imageMessages = normalizeMessageCount(metricRaw.imageMessages)
+      const videoMessages = normalizeMessageCount(metricRaw.videoMessages)
+      const emojiMessages = normalizeMessageCount(metricRaw.emojiMessages)
+
+      if (
+        typeof totalMessages !== 'number' &&
+        typeof voiceMessages !== 'number' &&
+        typeof imageMessages !== 'number' &&
+        typeof videoMessages !== 'number' &&
+        typeof emojiMessages !== 'number'
+      ) {
+        continue
+      }
+
+      nextMetrics[sessionId] = {
+        totalMessages,
+        voiceMessages,
+        imageMessages,
+        videoMessages,
+        emojiMessages
+      }
+      if (typeof totalMessages === 'number') {
+        nextMessageCounts[sessionId] = totalMessages
+      }
+    }
+
+    if (Object.keys(nextMessageCounts).length > 0) {
+      setSessionMessageCounts(prev => {
+        let changed = false
+        const merged = { ...prev }
+        for (const [sessionId, count] of Object.entries(nextMessageCounts)) {
+          if (merged[sessionId] === count) continue
+          merged[sessionId] = count
+          changed = true
+        }
+        return changed ? merged : prev
+      })
+    }
+
+    if (Object.keys(nextMetrics).length > 0) {
+      setSessionContentMetrics(prev => {
+        let changed = false
+        const merged = { ...prev }
+        for (const [sessionId, metric] of Object.entries(nextMetrics)) {
+          const previous = merged[sessionId] || {}
+          const nextMetric: SessionContentMetric = {
+            totalMessages: typeof metric.totalMessages === 'number' ? metric.totalMessages : previous.totalMessages,
+            voiceMessages: typeof metric.voiceMessages === 'number' ? metric.voiceMessages : previous.voiceMessages,
+            imageMessages: typeof metric.imageMessages === 'number' ? metric.imageMessages : previous.imageMessages,
+            videoMessages: typeof metric.videoMessages === 'number' ? metric.videoMessages : previous.videoMessages,
+            emojiMessages: typeof metric.emojiMessages === 'number' ? metric.emojiMessages : previous.emojiMessages
+          }
+          if (
+            previous.totalMessages === nextMetric.totalMessages &&
+            previous.voiceMessages === nextMetric.voiceMessages &&
+            previous.imageMessages === nextMetric.imageMessages &&
+            previous.videoMessages === nextMetric.videoMessages &&
+            previous.emojiMessages === nextMetric.emojiMessages
+          ) {
+            continue
+          }
+          merged[sessionId] = nextMetric
+          changed = true
+        }
+        return changed ? merged : prev
+      })
+    }
+  }, [])
+
+  const loadSessionContentStats = useCallback(async (
+    sourceSessions: SessionRow[],
+    priorityTab: ConversationTab
+  ) => {
+    const requestId = sessionContentStatsRequestIdRef.current + 1
+    sessionContentStatsRequestIdRef.current = requestId
+    const isStale = () => sessionContentStatsRequestIdRef.current !== requestId
+
+    const exportableSessions = sourceSessions.filter(session => session.hasSession)
+    if (exportableSessions.length === 0) {
+      setIsLoadingSessionContentStats(false)
+      return
+    }
+
+    const prioritizedSessionIds = exportableSessions
+      .filter(session => session.kind === priorityTab)
+      .map(session => session.username)
+    const prioritizedSet = new Set(prioritizedSessionIds)
+    const remainingSessionIds = exportableSessions
+      .filter(session => !prioritizedSet.has(session.username))
+      .map(session => session.username)
+    const orderedSessionIds = [...prioritizedSessionIds, ...remainingSessionIds]
+
+    if (orderedSessionIds.length === 0) {
+      setIsLoadingSessionContentStats(false)
+      return
+    }
+
+    setIsLoadingSessionContentStats(true)
+    try {
+      const chunkSize = 80
+      for (let i = 0; i < orderedSessionIds.length; i += chunkSize) {
+        const chunk = orderedSessionIds.slice(i, i + chunkSize)
+        if (chunk.length === 0) continue
+        const result = await window.electronAPI.chat.getExportSessionStats(
+          chunk,
+          { includeRelations: false, allowStaleCache: true }
+        )
+        if (isStale()) return
+        if (result.success && result.data) {
+          mergeSessionContentMetrics(result.data as Record<string, SessionExportMetric | undefined>)
+        }
+      }
+    } catch (error) {
+      console.error('导出页加载会话内容统计失败:', error)
+    } finally {
+      if (!isStale()) {
+        setIsLoadingSessionContentStats(false)
+      }
+    }
+  }, [mergeSessionContentMetrics])
+
   const loadSessionMessageCounts = useCallback(async (
     sourceSessions: SessionRow[],
     priorityTab: ConversationTab
@@ -1406,6 +1584,14 @@ function ExportPage() {
       return acc
     }, {})
     setSessionMessageCounts(seededHintCounts)
+    if (Object.keys(seededHintCounts).length > 0) {
+      mergeSessionContentMetrics(
+        Object.entries(seededHintCounts).reduce<Record<string, SessionContentMetric>>((acc, [sessionId, count]) => {
+          acc[sessionId] = { totalMessages: count }
+          return acc
+        }, {})
+      )
+    }
 
     if (exportableSessions.length === 0) {
       setIsLoadingSessionCounts(false)
@@ -1431,6 +1617,12 @@ function ExportPage() {
       }, {})
       if (Object.keys(normalized).length === 0) return
       setSessionMessageCounts(prev => ({ ...prev, ...normalized }))
+      mergeSessionContentMetrics(
+        Object.entries(normalized).reduce<Record<string, SessionContentMetric>>((acc, [sessionId, count]) => {
+          acc[sessionId] = { totalMessages: count }
+          return acc
+        }, {})
+      )
     }
 
     setIsLoadingSessionCounts(true)
@@ -1457,16 +1649,20 @@ function ExportPage() {
         setIsLoadingSessionCounts(false)
       }
     }
-  }, [])
+  }, [mergeSessionContentMetrics])
 
   const loadSessions = useCallback(async () => {
     const loadToken = Date.now()
     sessionLoadTokenRef.current = loadToken
+    sessionsHydratedAtRef.current = 0
     setIsLoading(true)
     setIsSessionEnriching(false)
     sessionCountRequestIdRef.current += 1
+    sessionContentStatsRequestIdRef.current += 1
     setSessionMessageCounts({})
+    setSessionContentMetrics({})
     setIsLoadingSessionCounts(false)
+    setIsLoadingSessionContentStats(false)
 
     const isStale = () => sessionLoadTokenRef.current !== loadToken
 
@@ -1508,7 +1704,12 @@ function ExportPage() {
 
         if (isStale()) return
         setSessions(baseSessions)
-        void loadSessionMessageCounts(baseSessions, activeTabRef.current)
+        sessionsHydratedAtRef.current = Date.now()
+        void (async () => {
+          await loadSessionMessageCounts(baseSessions, activeTabRef.current)
+          if (isStale()) return
+          await loadSessionContentStats(baseSessions, activeTabRef.current)
+        })()
         setSessionDataSource(cachedContacts.length > 0 ? 'cache' : 'network')
         if (cachedContacts.length === 0) {
           setSessionContactsUpdatedAt(Date.now())
@@ -1670,6 +1871,7 @@ function ExportPage() {
 
             const persistAt = Date.now()
             setSessions(nextSessions)
+            sessionsHydratedAtRef.current = persistAt
             if (hasNetworkContactsSnapshot && contactsCachePayload.length > 0) {
               await configService.setContactsListCache(scopeKey, contactsCachePayload)
               setSessionContactsUpdatedAt(persistAt)
@@ -1696,17 +1898,28 @@ function ExportPage() {
     } finally {
       if (!isStale()) setIsLoading(false)
     }
-  }, [ensureExportCacheScope, loadContactsCaches, loadSessionMessageCounts, syncContactTypeCounts])
+  }, [ensureExportCacheScope, loadContactsCaches, loadSessionContentStats, loadSessionMessageCounts, syncContactTypeCounts])
 
   useEffect(() => {
     if (!isExportRoute) return
+    const now = Date.now()
+    const hasFreshSessionSnapshot = hasBaseConfigReadyRef.current &&
+      sessionsRef.current.length > 0 &&
+      now - sessionsHydratedAtRef.current <= EXPORT_REENTER_SESSION_SOFT_REFRESH_MS
+    const hasFreshSnsSnapshot = hasSeededSnsStatsRef.current &&
+      now - snsStatsHydratedAtRef.current <= EXPORT_REENTER_SNS_SOFT_REFRESH_MS
+
     void loadBaseConfig()
     void ensureSharedTabCountsLoaded()
-    void loadSessions()
+    if (!hasFreshSessionSnapshot) {
+      void loadSessions()
+    }
 
     // 朋友圈统计延后一点加载，避免与首屏会话初始化抢占。
     const timer = window.setTimeout(() => {
-      void loadSnsStats({ full: true })
+      if (!hasFreshSnsSnapshot) {
+        void loadSnsStats({ full: true })
+      }
     }, 120)
 
     return () => window.clearTimeout(timer)
@@ -1726,8 +1939,10 @@ function ExportPage() {
     // 导出页隐藏时停止后台联系人补齐请求，避免与通讯录页面查询抢占。
     sessionLoadTokenRef.current = Date.now()
     sessionCountRequestIdRef.current += 1
+    sessionContentStatsRequestIdRef.current += 1
     setIsSessionEnriching(false)
     setIsLoadingSessionCounts(false)
+    setIsLoadingSessionContentStats(false)
   }, [isExportRoute])
 
   useEffect(() => {
@@ -2840,6 +3055,7 @@ function ExportPage() {
     cacheMeta?: SessionExportCacheMeta,
     relationLoadedOverride?: boolean
   ) => {
+    mergeSessionContentMetrics({ [sessionId]: metric })
     setSessionDetail((prev) => {
       if (!prev || prev.wxid !== sessionId) return prev
       const relationLoaded = relationLoadedOverride ?? Boolean(prev.relationStatsLoaded)
@@ -2866,7 +3082,7 @@ function ExportPage() {
         latestMessageTime: Number.isFinite(metric.lastTimestamp) ? metric.lastTimestamp : prev.latestMessageTime
       }
     })
-  }, [])
+  }, [mergeSessionContentMetrics])
 
   const loadSessionDetail = useCallback(async (sessionId: string) => {
     const normalizedSessionId = String(sessionId || '').trim()
@@ -2875,11 +3091,17 @@ function ExportPage() {
     const requestSeq = ++detailRequestSeqRef.current
     const mappedSession = sessionRowByUsername.get(normalizedSessionId)
     const mappedContact = contactByUsername.get(normalizedSessionId)
+    const cachedMetric = sessionContentMetrics[normalizedSessionId]
     const countedCount = normalizeMessageCount(sessionMessageCounts[normalizedSessionId])
+    const metricCount = normalizeMessageCount(cachedMetric?.totalMessages)
+    const metricVoice = normalizeMessageCount(cachedMetric?.voiceMessages)
+    const metricImage = normalizeMessageCount(cachedMetric?.imageMessages)
+    const metricVideo = normalizeMessageCount(cachedMetric?.videoMessages)
+    const metricEmoji = normalizeMessageCount(cachedMetric?.emojiMessages)
     const hintedCount = typeof mappedSession?.messageCountHint === 'number' && Number.isFinite(mappedSession.messageCountHint) && mappedSession.messageCountHint >= 0
       ? Math.floor(mappedSession.messageCountHint)
       : undefined
-    const initialMessageCount = countedCount ?? hintedCount
+    const initialMessageCount = countedCount ?? metricCount ?? hintedCount
 
     setCopiedDetailField(null)
     setIsRefreshingSessionDetailStats(false)
@@ -2894,10 +3116,10 @@ function ExportPage() {
         alias: sameSession ? prev?.alias : undefined,
         avatarUrl: mappedSession?.avatarUrl || mappedContact?.avatarUrl || (sameSession ? prev?.avatarUrl : undefined),
         messageCount: initialMessageCount ?? (sameSession ? prev.messageCount : Number.NaN),
-        voiceMessages: sameSession ? prev?.voiceMessages : undefined,
-        imageMessages: sameSession ? prev?.imageMessages : undefined,
-        videoMessages: sameSession ? prev?.videoMessages : undefined,
-        emojiMessages: sameSession ? prev?.emojiMessages : undefined,
+        voiceMessages: metricVoice ?? (sameSession ? prev?.voiceMessages : undefined),
+        imageMessages: metricImage ?? (sameSession ? prev?.imageMessages : undefined),
+        videoMessages: metricVideo ?? (sameSession ? prev?.videoMessages : undefined),
+        emojiMessages: metricEmoji ?? (sameSession ? prev?.emojiMessages : undefined),
         privateMutualGroups: sameSession ? prev?.privateMutualGroups : undefined,
         groupMemberCount: sameSession ? prev?.groupMemberCount : undefined,
         groupMyMessages: sameSession ? prev?.groupMyMessages : undefined,
@@ -3037,7 +3259,7 @@ function ExportPage() {
         setIsLoadingSessionDetailExtra(false)
       }
     }
-  }, [applySessionDetailStats, contactByUsername, sessionMessageCounts, sessionRowByUsername])
+  }, [applySessionDetailStats, contactByUsername, sessionContentMetrics, sessionMessageCounts, sessionRowByUsername])
 
   const loadSessionRelationStats = useCallback(async () => {
     const normalizedSessionId = String(sessionDetail?.wxid || '').trim()
@@ -3909,6 +4131,12 @@ function ExportPage() {
               消息总数统计中…
             </span>
           )}
+          {isLoadingSessionContentStats && (
+            <span className="meta-item syncing">
+              <Loader2 size={12} className="spin" />
+              图片/语音/表情包/视频统计中…
+            </span>
+          )}
         </div>
 
         {contactsList.length > 0 && isContactsListLoading && (
@@ -3965,7 +4193,7 @@ function ExportPage() {
               <>
                 <div className="contacts-list-header">
                   <span className="contacts-list-header-main">联系人（头像/名称/微信号）</span>
-                  <span className="contacts-list-header-count">总消息</span>
+                  <span className="contacts-list-header-count">总消息 | 图片 | 语音 | 表情包 | 视频</span>
                   <span className="contacts-list-header-actions">操作</span>
                 </div>
                 <div className="contacts-list" ref={contactsListRef} onScroll={onContactsListScroll}>
@@ -3982,14 +4210,40 @@ function ExportPage() {
                       const isQueued = canExport && queuedSessionIds.has(contact.username)
                       const isPaused = canExport && pausedSessionIds.has(contact.username)
                       const recent = canExport ? formatRecentExportTime(lastExportBySession[contact.username], nowTick) : ''
+                      const contentMetric = sessionContentMetrics[contact.username]
                       const countedMessages = normalizeMessageCount(sessionMessageCounts[contact.username])
+                      const metricMessages = normalizeMessageCount(contentMetric?.totalMessages)
                       const hintedMessages = normalizeMessageCount(matchedSession?.messageCountHint)
-                      const displayedMessageCount = countedMessages ?? hintedMessages
+                      const displayedMessageCount = countedMessages ?? metricMessages ?? hintedMessages
+                      const displayedImageCount = normalizeMessageCount(contentMetric?.imageMessages)
+                      const displayedVoiceCount = normalizeMessageCount(contentMetric?.voiceMessages)
+                      const displayedEmojiCount = normalizeMessageCount(contentMetric?.emojiMessages)
+                      const displayedVideoCount = normalizeMessageCount(contentMetric?.videoMessages)
                       const messageCountLabel = !canExport
                         ? '--'
                         : typeof displayedMessageCount === 'number'
                           ? displayedMessageCount.toLocaleString('zh-CN')
                           : (isLoadingSessionCounts ? '统计中…' : '--')
+                      const imageCountLabel = !canExport
+                        ? '--'
+                        : typeof displayedImageCount === 'number'
+                          ? displayedImageCount.toLocaleString('zh-CN')
+                          : (isLoadingSessionContentStats ? '统计中…' : '0')
+                      const voiceCountLabel = !canExport
+                        ? '--'
+                        : typeof displayedVoiceCount === 'number'
+                          ? displayedVoiceCount.toLocaleString('zh-CN')
+                          : (isLoadingSessionContentStats ? '统计中…' : '0')
+                      const emojiCountLabel = !canExport
+                        ? '--'
+                        : typeof displayedEmojiCount === 'number'
+                          ? displayedEmojiCount.toLocaleString('zh-CN')
+                          : (isLoadingSessionContentStats ? '统计中…' : '0')
+                      const videoCountLabel = !canExport
+                        ? '--'
+                        : typeof displayedVideoCount === 'number'
+                          ? displayedVideoCount.toLocaleString('zh-CN')
+                          : (isLoadingSessionContentStats ? '统计中…' : '0')
                       return (
                         <div
                           key={contact.username}
@@ -4009,9 +4263,38 @@ function ExportPage() {
                               <div className="contact-remark">{contact.username}</div>
                             </div>
                             <div className="row-message-count">
-                              <strong className={`row-message-count-value ${typeof displayedMessageCount === 'number' ? '' : 'muted'}`}>
-                                {messageCountLabel}
-                              </strong>
+                              <div className="row-message-stats">
+                                <span className="row-message-stat total">
+                                  <span className="label">总消息</span>
+                                  <strong className={`row-message-count-value ${typeof displayedMessageCount === 'number' ? '' : 'muted'}`}>
+                                    {messageCountLabel}
+                                  </strong>
+                                </span>
+                                <span className="row-message-stat">
+                                  <span className="label">图片</span>
+                                  <strong className={`row-message-count-value ${typeof displayedImageCount === 'number' ? '' : 'muted'}`}>
+                                    {imageCountLabel}
+                                  </strong>
+                                </span>
+                                <span className="row-message-stat">
+                                  <span className="label">语音</span>
+                                  <strong className={`row-message-count-value ${typeof displayedVoiceCount === 'number' ? '' : 'muted'}`}>
+                                    {voiceCountLabel}
+                                  </strong>
+                                </span>
+                                <span className="row-message-stat">
+                                  <span className="label">表情包</span>
+                                  <strong className={`row-message-count-value ${typeof displayedEmojiCount === 'number' ? '' : 'muted'}`}>
+                                    {emojiCountLabel}
+                                  </strong>
+                                </span>
+                                <span className="row-message-stat">
+                                  <span className="label">视频</span>
+                                  <strong className={`row-message-count-value ${typeof displayedVideoCount === 'number' ? '' : 'muted'}`}>
+                                    {videoCountLabel}
+                                  </strong>
+                                </span>
+                              </div>
                             </div>
                             <div className="row-action-cell">
                               <div className="row-action-main">
