@@ -244,9 +244,10 @@ interface SnsPostItemProps {
     onPreview: (src: string, isVideo?: boolean, liveVideoPath?: string) => void
     onDebug: (post: SnsPost) => void
     onDelete?: (postId: string) => void
+    onOpenAuthorPosts?: (post: SnsPost) => void
 }
 
-export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDebug, onDelete }) => {
+export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDebug, onDelete, onOpenAuthorPosts }) => {
     const [mediaDeleted, setMediaDeleted] = useState(false)
     const [dbDeleted, setDbDeleted] = useState(false)
     const [deleting, setDeleting] = useState(false)
@@ -306,22 +307,41 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
         }
     }
 
+    const handleOpenAuthorPosts = (e: React.MouseEvent) => {
+        e.stopPropagation()
+        onOpenAuthorPosts?.(post)
+    }
+
     return (
         <>
         <div className={`sns-post-item ${(mediaDeleted || dbDeleted) ? 'post-deleted' : ''}`}>
             <div className="post-avatar-col">
-                <Avatar
-                    src={post.avatarUrl}
-                    name={post.nickname}
-                    size={48}
-                    shape="rounded"
-                />
+                <button
+                    type="button"
+                    className="author-trigger-btn avatar-trigger"
+                    onClick={handleOpenAuthorPosts}
+                    title="查看该发布者的全部朋友圈"
+                >
+                    <Avatar
+                        src={post.avatarUrl}
+                        name={post.nickname}
+                        size={48}
+                        shape="rounded"
+                    />
+                </button>
             </div>
 
             <div className="post-content-col">
                 <div className="post-header-row">
                     <div className="post-author-info">
-                        <span className="author-name">{decodeHtmlEntities(post.nickname)}</span>
+                        <button
+                            type="button"
+                            className="author-trigger-btn author-name-trigger"
+                            onClick={handleOpenAuthorPosts}
+                            title="查看该发布者的全部朋友圈"
+                        >
+                            <span className="author-name">{decodeHtmlEntities(post.nickname)}</span>
+                        </button>
                         <span className="post-time">{formatTime(post.createTime)}</span>
                     </div>
                     <div className="post-header-actions">
