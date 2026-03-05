@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { TableVirtuoso } from 'react-virtuoso'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { createPortal } from 'react-dom'
 import {
   Aperture,
@@ -1274,6 +1274,8 @@ function ExportPage() {
   })
   const [hasSeededSnsStats, setHasSeededSnsStats] = useState(false)
   const [nowTick, setNowTick] = useState(Date.now())
+  const [isContactsListAtTop, setIsContactsListAtTop] = useState(true)
+  const [isPageScrolled, setIsPageScrolled] = useState(false)
   const tabCounts = useContactTypeCountsStore(state => state.tabCounts)
   const isSharedTabCountsLoading = useContactTypeCountsStore(state => state.isLoading)
   const isSharedTabCountsReady = useContactTypeCountsStore(state => state.isReady)
@@ -1293,6 +1295,7 @@ function ExportPage() {
   const contactsLoadTimeoutTimerRef = useRef<number | null>(null)
   const contactsLoadTimeoutMsRef = useRef(DEFAULT_CONTACTS_LOAD_TIMEOUT_MS)
   const contactsAvatarCacheRef = useRef<Record<string, configService.ContactsAvatarCacheEntry>>({})
+  const contactsVirtuosoRef = useRef<VirtuosoHandle | null>(null)
   const detailRequestSeqRef = useRef(0)
   const sessionsRef = useRef<SessionRow[]>([])
   const contactsListSizeRef = useRef(0)
@@ -1590,6 +1593,19 @@ function ExportPage() {
     if (!isExportRoute) return
     const timer = setInterval(() => setNowTick(Date.now()), 60 * 1000)
     return () => clearInterval(timer)
+  }, [isExportRoute])
+
+  useEffect(() => {
+    if (!isExportRoute) {
+      setIsPageScrolled(false)
+      return
+    }
+    const onWindowScroll = () => {
+      setIsPageScrolled(window.scrollY > 160)
+    }
+    onWindowScroll()
+    window.addEventListener('scroll', onWindowScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onWindowScroll)
   }, [isExportRoute])
 
   useEffect(() => {
@@ -3331,6 +3347,11 @@ function ExportPage() {
     return indexedContacts.map(item => item.contact)
   }, [contactsList, activeTab, searchKeyword, sessionMessageCounts, sessionRowByUsername])
 
+  useEffect(() => {
+    contactsVirtuosoRef.current?.scrollToIndex({ index: 0, align: 'start' })
+    setIsContactsListAtTop(true)
+  }, [activeTab, searchKeyword])
+
   const contactByUsername = useMemo(() => {
     const map = new Map<string, ContactInfo>()
     for (const contact of contactsList) {
@@ -3739,107 +3760,6 @@ function ExportPage() {
     return sessions.reduce((count, session) => (session.avatarUrl ? count + 1 : count), 0)
   }, [sessions])
 
-  const renderSessionName = (session: SessionRow) => {
-    return (
-      <div className="session-cell">
-        <div className="session-avatar">
-          {session.avatarUrl ? <img src={session.avatarUrl} alt="" /> : <span>{getAvatarLetter(session.displayName || session.username)}</span>}
-        </div>
-        <div className="session-meta">
-          <div className="session-name">{session.displayName || session.username}</div>
-          <div className="session-id">
-            {session.wechatId || session.username}
-            {!session.hasSession ? ' · 暂无会话记录' : ''}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  const renderActionCell = (session: SessionRow) => {
-    const isDetailActive = showSessionDetailPanel && sessionDetail?.wxid === session.username
-    if (!session.hasSession) {
-      return (
-        <div className="row-action-cell">
-          <div className="row-action-main">
-            <button
-              className={`row-detail-btn ${isDetailActive ? 'active' : ''}`}
-              onClick={() => openSessionDetail(session.username)}
-            >
-              详情
-            </button>
-            <button className="row-export-btn no-session" disabled>
-              暂无会话
-            </button>
-          </div>
-        </div>
-      )
-    }
-
-    const isRunning = runningSessionIds.has(session.username)
-    const isQueued = queuedSessionIds.has(session.username)
-    const recent = formatRecentExportTime(lastExportBySession[session.username], nowTick)
-
-    return (
-      <div className="row-action-cell">
-        <div className="row-action-main">
-          <button
-            className={`row-detail-btn ${isDetailActive ? 'active' : ''}`}
-            onClick={() => openSessionDetail(session.username)}
-          >
-            详情
-          </button>
-          <button
-            className={`row-export-btn ${isRunning ? 'running' : ''}`}
-            disabled={isRunning}
-            onClick={() => openSingleExport(session)}
-          >
-            {isRunning ? (
-              <>
-                <Loader2 size={14} className="spin" />
-                导出中
-              </>
-            ) : isQueued ? '排队中' : '导出'}
-          </button>
-        </div>
-        {recent && <span className="row-export-time">{recent}</span>}
-      </div>
-    )
-  }
-
-  const renderTableHeader = () => {
-    return (
-      <tr>
-        <th className="sticky-col">选择</th>
-        <th>联系人（头像/名称/微信号）</th>
-        <th className="sticky-right">操作</th>
-      </tr>
-    )
-  }
-
-  const renderRowCells = (session: SessionRow) => {
-    const selectable = session.hasSession
-    const checked = selectable && selectedSessions.has(session.username)
-
-    return (
-      <>
-        <td className="sticky-col">
-          <button
-            className={`select-icon-btn ${checked ? 'checked' : ''}`}
-            disabled={!selectable}
-            onClick={() => toggleSelectSession(session.username)}
-            title={selectable ? (checked ? '取消选择' : '选择会话') : '该联系人暂无会话记录'}
-          >
-            {checked ? <CheckSquare size={16} /> : <Square size={16} />}
-          </button>
-        </td>
-
-        <td>{renderSessionName(session)}</td>
-        <td className="sticky-right">{renderActionCell(session)}</td>
-      </>
-    )
-  }
-
   const visibleSelectedCount = useMemo(() => {
     const visibleSet = new Set(
       filteredContacts
@@ -3900,7 +3820,8 @@ function ExportPage() {
   const isSnsCardStatsLoading = !hasSeededSnsStats
   const taskRunningCount = tasks.filter(task => task.status === 'running').length
   const taskQueuedCount = tasks.filter(task => task.status === 'queued').length
-  const showInitialSkeleton = isLoading && sessions.length === 0
+  const hasFilteredContacts = filteredContacts.length > 0
+  const showBackToTop = isPageScrolled || !isContactsListAtTop
   const closeTaskCenter = useCallback(() => {
     setIsTaskCenterOpen(false)
     setExpandedPerfTaskId(null)
@@ -3908,104 +3829,98 @@ function ExportPage() {
   const toggleTaskPerfDetail = useCallback((taskId: string) => {
     setExpandedPerfTaskId(prev => (prev === taskId ? null : taskId))
   }, [])
-  const contactsListRows = useMemo(() => (
-    filteredContacts.map((contact) => {
-      const matchedSession = sessionRowByUsername.get(contact.username)
-      const canExport = Boolean(matchedSession?.hasSession)
-      const checked = canExport && selectedSessions.has(contact.username)
-      const isRunning = canExport && runningSessionIds.has(contact.username)
-      const isQueued = canExport && queuedSessionIds.has(contact.username)
-      const recent = canExport ? formatRecentExportTime(lastExportBySession[contact.username], nowTick) : ''
-      const countedMessages = normalizeMessageCount(sessionMessageCounts[contact.username])
-      const hintedMessages = normalizeMessageCount(matchedSession?.messageCountHint)
-      const displayedMessageCount = countedMessages ?? hintedMessages
-      const messageCountLabel = !canExport
-        ? '--'
-        : typeof displayedMessageCount === 'number'
-          ? displayedMessageCount.toLocaleString('zh-CN')
-          : (isLoadingSessionCounts ? '统计中…' : '--')
-      return (
-        <div
-          key={contact.username}
-          className={`contact-row ${checked ? 'selected' : ''}`}
-        >
-          <div className="contact-item">
-            <div className="row-select-cell">
-              <button
-                className={`select-icon-btn ${checked ? 'checked' : ''}`}
-                type="button"
-                disabled={!canExport}
-                onClick={() => toggleSelectSession(contact.username)}
-                title={canExport ? (checked ? '取消选择' : '选择会话') : '该联系人暂无会话记录'}
-              >
-                {checked ? <CheckSquare size={16} /> : <Square size={16} />}
-              </button>
-            </div>
-            <div className="contact-avatar">
-              {contact.avatarUrl ? (
-                <img src={contact.avatarUrl} alt="" loading="lazy" />
-              ) : (
-                <span>{getAvatarLetter(contact.displayName)}</span>
-              )}
-            </div>
-            <div className="contact-info">
-              <div className="contact-name">{contact.displayName}</div>
-              <div className="contact-remark">{contact.username}</div>
-            </div>
-            <div className="row-message-count">
-              <div className="row-message-stats">
-                <strong className={`row-message-count-value ${typeof displayedMessageCount === 'number' ? '' : 'muted'}`}>
-                  {messageCountLabel}
-                </strong>
-              </div>
-            </div>
-            <div className="row-action-cell">
-              <div className="row-action-main">
-                <button
-                  className="row-open-chat-btn"
-                  disabled={!canExport}
-                  title={canExport ? '在新窗口打开该会话' : '该联系人暂无会话记录'}
-                  onClick={() => {
-                    if (!canExport) return
-                    void window.electronAPI.window.openSessionChatWindow(contact.username)
-                  }}
-                >
-                  <ExternalLink size={13} />
-                  打开对话
-                </button>
-                <button
-                  className={`row-detail-btn ${showSessionDetailPanel && sessionDetail?.wxid === contact.username ? 'active' : ''}`}
-                  onClick={() => openSessionDetail(contact.username)}
-                >
-                  详情
-                </button>
-                <button
-                  className={`row-export-btn ${isRunning ? 'running' : ''} ${!canExport ? 'no-session' : ''}`}
-                  disabled={!canExport || isRunning}
-                  onClick={() => {
-                    if (!matchedSession || !matchedSession.hasSession) return
-                    openSingleExport({
-                      ...matchedSession,
-                      displayName: contact.displayName || matchedSession.displayName || matchedSession.username
-                    })
-                  }}
-                >
-                  {isRunning ? (
-                    <>
-                      <Loader2 size={14} className="spin" />
-                      导出中
-                    </>
-                  ) : !canExport ? '暂无会话' : isQueued ? '排队中' : '单会话导出'}
-                </button>
-              </div>
-              {recent && <span className="row-export-time">{recent}</span>}
+  const renderContactRow = useCallback((_: number, contact: ContactInfo) => {
+    const matchedSession = sessionRowByUsername.get(contact.username)
+    const canExport = Boolean(matchedSession?.hasSession)
+    const checked = canExport && selectedSessions.has(contact.username)
+    const isRunning = canExport && runningSessionIds.has(contact.username)
+    const isQueued = canExport && queuedSessionIds.has(contact.username)
+    const recent = canExport ? formatRecentExportTime(lastExportBySession[contact.username], nowTick) : ''
+    const countedMessages = normalizeMessageCount(sessionMessageCounts[contact.username])
+    const hintedMessages = normalizeMessageCount(matchedSession?.messageCountHint)
+    const displayedMessageCount = countedMessages ?? hintedMessages
+    const messageCountLabel = !canExport
+      ? '--'
+      : typeof displayedMessageCount === 'number'
+        ? displayedMessageCount.toLocaleString('zh-CN')
+        : (isLoadingSessionCounts ? '统计中…' : '--')
+    return (
+      <div className={`contact-row ${checked ? 'selected' : ''}`}>
+        <div className="contact-item">
+          <div className="row-select-cell">
+            <button
+              className={`select-icon-btn ${checked ? 'checked' : ''}`}
+              type="button"
+              disabled={!canExport}
+              onClick={() => toggleSelectSession(contact.username)}
+              title={canExport ? (checked ? '取消选择' : '选择会话') : '该联系人暂无会话记录'}
+            >
+              {checked ? <CheckSquare size={16} /> : <Square size={16} />}
+            </button>
+          </div>
+          <div className="contact-avatar">
+            {contact.avatarUrl ? (
+              <img src={contact.avatarUrl} alt="" loading="lazy" />
+            ) : (
+              <span>{getAvatarLetter(contact.displayName)}</span>
+            )}
+          </div>
+          <div className="contact-info">
+            <div className="contact-name">{contact.displayName}</div>
+            <div className="contact-remark">{contact.username}</div>
+          </div>
+          <div className="row-message-count">
+            <div className="row-message-stats">
+              <strong className={`row-message-count-value ${typeof displayedMessageCount === 'number' ? '' : 'muted'}`}>
+                {messageCountLabel}
+              </strong>
             </div>
           </div>
+          <div className="row-action-cell">
+            <div className="row-action-main">
+              <button
+                className="row-open-chat-btn"
+                disabled={!canExport}
+                title={canExport ? '在新窗口打开该会话' : '该联系人暂无会话记录'}
+                onClick={() => {
+                  if (!canExport) return
+                  void window.electronAPI.window.openSessionChatWindow(contact.username)
+                }}
+              >
+                <ExternalLink size={13} />
+                打开对话
+              </button>
+              <button
+                className={`row-detail-btn ${showSessionDetailPanel && sessionDetail?.wxid === contact.username ? 'active' : ''}`}
+                onClick={() => openSessionDetail(contact.username)}
+              >
+                详情
+              </button>
+              <button
+                className={`row-export-btn ${isRunning ? 'running' : ''} ${!canExport ? 'no-session' : ''}`}
+                disabled={!canExport || isRunning}
+                onClick={() => {
+                  if (!matchedSession || !matchedSession.hasSession) return
+                  openSingleExport({
+                    ...matchedSession,
+                    displayName: contact.displayName || matchedSession.displayName || matchedSession.username
+                  })
+                }}
+              >
+                {isRunning ? (
+                  <>
+                    <Loader2 size={14} className="spin" />
+                    导出中
+                  </>
+                ) : !canExport ? '暂无会话' : isQueued ? '排队中' : '单会话导出'}
+              </button>
+            </div>
+            {recent && <span className="row-export-time">{recent}</span>}
+          </div>
         </div>
-      )
-    })
-  ), [
-    filteredContacts,
+      </div>
+    )
+  }, [
     isLoadingSessionCounts,
     lastExportBySession,
     nowTick,
@@ -4020,6 +3935,14 @@ function ExportPage() {
     showSessionDetailPanel,
     toggleSelectSession
   ])
+  const handleBackToTop = useCallback(() => {
+    contactsVirtuosoRef.current?.scrollToIndex({ index: 0, align: 'start', behavior: 'smooth' })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
+  useEffect(() => {
+    if (hasFilteredContacts) return
+    setIsContactsListAtTop(true)
+  }, [hasFilteredContacts])
   const chooseExportFolder = useCallback(async () => {
     const result = await window.electronAPI.dialog.openFile({
       title: '选择导出目录',
@@ -4185,52 +4108,105 @@ function ExportPage() {
         />
       </div>
       <div className="session-table-section">
-        <div className="table-toolbar">
-          <div className="table-tabs" role="tablist" aria-label="会话类型">
-            <button className={`tab-btn ${activeTab === 'private' ? 'active' : ''}`} onClick={() => setActiveTab('private')}>
-              私聊 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.private}
-            </button>
-            <button className={`tab-btn ${activeTab === 'group' ? 'active' : ''}`} onClick={() => setActiveTab('group')}>
-              群聊 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.group}
-            </button>
-            <button className={`tab-btn ${activeTab === 'official' ? 'active' : ''}`} onClick={() => setActiveTab('official')}>
-              公众号 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.official}
-            </button>
-            <button className={`tab-btn ${activeTab === 'former_friend' ? 'active' : ''}`} onClick={() => setActiveTab('former_friend')}>
-              曾经的好友 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.former_friend}
-            </button>
-          </div>
-
-          <div className="toolbar-actions">
-            <div className="search-input-wrap">
-              <Search size={14} />
-              <input
-                value={searchKeyword}
-                onChange={(event) => setSearchKeyword(event.target.value)}
-                placeholder={`搜索${activeTabLabel}联系人...`}
-              />
-              {searchKeyword && (
-                <button className="clear-search" onClick={() => setSearchKeyword('')}>
-                  <X size={12} />
-                </button>
-              )}
-            </div>
-            <button className="secondary-btn" onClick={() => void loadContactsList()} disabled={isContactsListLoading}>
-              <RefreshCw size={14} className={isContactsListLoading ? 'spin' : ''} />
-              刷新
-            </button>
-          </div>
-        </div>
-
-        {contactsList.length > 0 && isContactsListLoading && (
-          <div className="table-stage-hint">
-            <Loader2 size={14} className="spin" />
-            联系人列表同步中…
-          </div>
-        )}
-
         <div className="session-table-layout">
           <div className="table-wrap">
+            <div className="session-table-sticky">
+              <div className="table-toolbar">
+                <div className="table-tabs" role="tablist" aria-label="会话类型">
+                  <button className={`tab-btn ${activeTab === 'private' ? 'active' : ''}`} onClick={() => setActiveTab('private')}>
+                    私聊 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.private}
+                  </button>
+                  <button className={`tab-btn ${activeTab === 'group' ? 'active' : ''}`} onClick={() => setActiveTab('group')}>
+                    群聊 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.group}
+                  </button>
+                  <button className={`tab-btn ${activeTab === 'official' ? 'active' : ''}`} onClick={() => setActiveTab('official')}>
+                    公众号 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.official}
+                  </button>
+                  <button className={`tab-btn ${activeTab === 'former_friend' ? 'active' : ''}`} onClick={() => setActiveTab('former_friend')}>
+                    曾经的好友 {isTabCountComputing ? <span className="count-loading">计算中<span className="animated-ellipsis" aria-hidden="true">...</span></span> : tabCounts.former_friend}
+                  </button>
+                </div>
+
+                <div className="toolbar-actions">
+                  <div className="search-input-wrap">
+                    <Search size={14} />
+                    <input
+                      value={searchKeyword}
+                      onChange={(event) => setSearchKeyword(event.target.value)}
+                      placeholder={`搜索${activeTabLabel}联系人...`}
+                    />
+                    {searchKeyword && (
+                      <button className="clear-search" onClick={() => setSearchKeyword('')}>
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                  <button className="secondary-btn" onClick={() => void loadContactsList()} disabled={isContactsListLoading}>
+                    <RefreshCw size={14} className={isContactsListLoading ? 'spin' : ''} />
+                    刷新
+                  </button>
+                </div>
+              </div>
+
+              {contactsList.length > 0 && isContactsListLoading && (
+                <div className="table-stage-hint">
+                  <Loader2 size={14} className="spin" />
+                  联系人列表同步中…
+                </div>
+              )}
+
+              {hasFilteredContacts && (
+                <>
+                  <div className="contacts-selection-toolbar">
+                    <button
+                      className={`select-icon-btn ${isAllVisibleSelected ? 'checked' : ''}`}
+                      type="button"
+                      onClick={toggleSelectAllVisible}
+                      disabled={visibleSelectableCount === 0}
+                      title={isAllVisibleSelected ? '取消全选当前筛选联系人' : '全选当前筛选联系人'}
+                    >
+                      {isAllVisibleSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+                    </button>
+                    <button
+                      className="selection-toggle-btn"
+                      type="button"
+                      onClick={toggleSelectAllVisible}
+                      disabled={visibleSelectableCount === 0}
+                    >
+                      {isAllVisibleSelected ? '取消全选当前筛选' : '全选当前筛选'}
+                    </button>
+                    <span className="selection-summary muted">
+                      当前筛选 {visibleSelectedCount}/{visibleSelectableCount}
+                    </span>
+                    <button
+                      className="selection-clear-btn"
+                      type="button"
+                      onClick={clearSelection}
+                      disabled={selectedCount === 0}
+                    >
+                      清空
+                    </button>
+                    {selectedCount > 0 && (
+                      <button
+                        className="selection-export-btn"
+                        type="button"
+                        onClick={openBatchExport}
+                      >
+                        <span>批量导出</span>
+                        <span className="selection-export-count">{selectedCount}</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="contacts-list-header">
+                    <span className="contacts-list-header-select">选择</span>
+                    <span className="contacts-list-header-main">联系人（头像/名称/微信号）</span>
+                    <span className="contacts-list-header-count">总消息数</span>
+                    <span className="contacts-list-header-actions">操作</span>
+                  </div>
+                </>
+              )}
+            </div>
+
             {contactsList.length === 0 && contactsLoadIssue ? (
               <div className="load-issue-state">
                 <div className="issue-card">
@@ -4268,62 +4244,22 @@ function ExportPage() {
                 <Loader2 size={32} className="spin" />
                 <span>联系人加载中...</span>
               </div>
-            ) : filteredContacts.length === 0 ? (
+            ) : !hasFilteredContacts ? (
               <div className="empty-state">
                 <span>暂无联系人</span>
               </div>
             ) : (
-              <>
-                <div className="contacts-selection-toolbar">
-                  <button
-                    className={`select-icon-btn ${isAllVisibleSelected ? 'checked' : ''}`}
-                    type="button"
-                    onClick={toggleSelectAllVisible}
-                    disabled={visibleSelectableCount === 0}
-                    title={isAllVisibleSelected ? '取消全选当前筛选联系人' : '全选当前筛选联系人'}
-                  >
-                    {isAllVisibleSelected ? <CheckSquare size={16} /> : <Square size={16} />}
-                  </button>
-                  <button
-                    className="selection-toggle-btn"
-                    type="button"
-                    onClick={toggleSelectAllVisible}
-                    disabled={visibleSelectableCount === 0}
-                  >
-                    {isAllVisibleSelected ? '取消全选当前筛选' : '全选当前筛选'}
-                  </button>
-                  <span className="selection-summary muted">
-                    当前筛选 {visibleSelectedCount}/{visibleSelectableCount}
-                  </span>
-                  <button
-                    className="selection-clear-btn"
-                    type="button"
-                    onClick={clearSelection}
-                    disabled={selectedCount === 0}
-                  >
-                    清空
-                  </button>
-                  {selectedCount > 0 && (
-                    <button
-                      className="selection-export-btn"
-                      type="button"
-                      onClick={openBatchExport}
-                    >
-                      <span>批量导出</span>
-                      <span className="selection-export-count">{selectedCount}</span>
-                    </button>
-                  )}
-                </div>
-                <div className="contacts-list-header">
-                  <span className="contacts-list-header-select">选择</span>
-                  <span className="contacts-list-header-main">联系人（头像/名称/微信号）</span>
-                  <span className="contacts-list-header-count">总消息数</span>
-                  <span className="contacts-list-header-actions">操作</span>
-                </div>
-                <div className="contacts-list">
-                  {contactsListRows}
-                </div>
-              </>
+              <div className="contacts-list">
+                <Virtuoso
+                  ref={contactsVirtuosoRef}
+                  className="contacts-virtuoso"
+                  data={filteredContacts}
+                  computeItemKey={(_, contact) => contact.username}
+                  itemContent={renderContactRow}
+                  atTopStateChange={setIsContactsListAtTop}
+                  overscan={420}
+                />
+              </div>
             )}
           </div>
 
@@ -4628,6 +4564,16 @@ function ExportPage() {
           )}
         </div>
       </div>
+
+      {showBackToTop && (
+        <button
+          type="button"
+          className="back-to-top-btn"
+          onClick={handleBackToTop}
+        >
+          回到顶部
+        </button>
+      )}
 
       {exportDialog.open && createPortal(
         <div className="export-dialog-overlay" onClick={closeExportDialog}>
