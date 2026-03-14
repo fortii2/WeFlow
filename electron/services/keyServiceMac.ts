@@ -176,9 +176,18 @@ export class KeyServiceMac {
 
   private async getWeChatPid(): Promise<number> {
     try {
-      // 优先使用 pgrep，避免 ps 的 comm 列被截断导致识别失败
+      // 优先使用 pgrep -x 精确匹配进程名
       try {
         const { stdout } = await execFileAsync('/usr/bin/pgrep', ['-x', 'WeChat'])
+        const ids = stdout.split(/\r?\n/).map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n) && n > 0)
+        if (ids.length > 0) return Math.max(...ids)
+      } catch {
+        // ignore and fallback
+      }
+
+      // pgrep -f 匹配完整命令行路径（打包后 pgrep -x 可能失败时的备选）
+      try {
+        const { stdout } = await execFileAsync('/usr/bin/pgrep', ['-f', 'WeChat.app/Contents/MacOS/WeChat'])
         const ids = stdout.split(/\r?\n/).map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n) && n > 0)
         if (ids.length > 0) return Math.max(...ids)
       } catch {
@@ -188,17 +197,20 @@ export class KeyServiceMac {
       const { stdout } = await execFileAsync('/bin/ps', ['-A', '-o', 'pid,comm,command'])
       const lines = stdout.split('\n').slice(1)
 
-      const candidates: Array<{ pid: number; command: string }> = []
+      const candidates: Array<{ pid: number; comm: string; command: string }> = []
       for (const line of lines) {
         const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/)
         if (!match) continue
 
         const pid = parseInt(match[1], 10)
+        const comm = match[2]
         const command = match[3]
 
+        // 打包后 command 列可能被截断或为空，同时检查 comm 列
         const pathMatch = command.includes('/Applications/WeChat.app/Contents/MacOS/WeChat') ||
-                          command.includes('/Contents/MacOS/WeChat')
-        if (pathMatch) candidates.push({ pid, command })
+                          command.includes('/Contents/MacOS/WeChat') ||
+                          comm === 'WeChat'
+        if (pathMatch) candidates.push({ pid, comm, command })
       }
 
       if (candidates.length === 0) throw new Error('WeChat process not found')
@@ -209,11 +221,14 @@ export class KeyServiceMac {
                !cmd.includes('/WeChatAppEx') &&
                !cmd.includes(' WeChatAppEx') &&
                !cmd.includes('crashpad_handler') &&
-               !cmd.includes('Helper')
+               !cmd.includes('Helper') &&
+               p.comm !== 'WeChat Helper'
       })
       if (filtered.length === 0) throw new Error('No valid WeChat main process found')
 
-      const preferredMain = filtered.filter(p => p.command.includes('/Contents/MacOS/WeChat'))
+      const preferredMain = filtered.filter(p =>
+        p.command.includes('/Contents/MacOS/WeChat') || p.comm === 'WeChat'
+      )
       const selectedPool = preferredMain.length > 0 ? preferredMain : filtered
       const selected = selectedPool.reduce((max, p) => p.pid > max.pid ? p : max)
       return selected.pid
