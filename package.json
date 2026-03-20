@@ -96,6 +96,7 @@
       "icon": "public/icon.png",
       "target": [
         "appimage",
+        "deb",
         "tar.gz"
       ],
       "category": "Utility",
