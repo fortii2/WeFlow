@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Link, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Link, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
@@ -16,6 +16,7 @@ import JumpToDatePopover from '../components/JumpToDatePopover'
 import { ContactSnsTimelineDialog } from '../components/Sns/ContactSnsTimelineDialog'
 import { type ContactSnsTimelineTarget, isSingleContactSession } from '../components/Sns/contactSnsTimeline'
 import * as configService from '../services/config'
+import BizPage, { BizAccountList, BizMessageArea, BizAccount } from './BizPage'
 import {
   finishBackgroundTask,
   isBackgroundTaskCancelRequested,
@@ -35,6 +36,8 @@ const SYSTEM_MESSAGE_TYPES = [
   10000,        // 系统消息
   266287972401, // 拍一拍
 ]
+
+const OFFICIAL_ACCOUNTS_VIRTUAL_ID = 'official_accounts_virtual'
 
 interface PendingInSessionSearchPayload {
   sessionId: string
@@ -983,6 +986,7 @@ const SessionItem = React.memo(function SessionItem({
   )
 
   const isFoldEntry = session.username.toLowerCase().includes('placeholder_foldgroup')
+  const isBizEntry = session.username === OFFICIAL_ACCOUNTS_VIRTUAL_ID
 
   // 折叠入口：专属名称和图标
   if (isFoldEntry) {
@@ -1001,6 +1005,29 @@ const SessionItem = React.memo(function SessionItem({
           </div>
           <div className="session-bottom">
             <span className="session-summary">{session.summary || '暂无消息'}</span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // 公众号入口：专属名称和图标
+  if (isBizEntry) {
+    return (
+      <div
+        className={`session-item biz-entry ${isActive ? 'active' : ''}`}
+        onClick={() => onSelect(session)}
+      >
+        <div className="biz-entry-avatar">
+          <Newspaper size={22} />
+        </div>
+        <div className="session-info">
+          <div className="session-top">
+            <span className="session-name">订阅号/服务号</span>
+            <span className="session-time">{timeText}</span>
+          </div>
+          <div className="session-bottom">
+            <span className="session-summary">{session.summary || '查看公众号历史消息'}</span>
           </div>
         </div>
       </div>
@@ -1204,6 +1231,8 @@ function ChatPage(props: ChatPageProps) {
   const [highlightedMessageKeys, setHighlightedMessageKeys] = useState<string[]>([])
   const [isRefreshingSessions, setIsRefreshingSessions] = useState(false)
   const [foldedView, setFoldedView] = useState(false) // 是否在"折叠的群聊"视图
+  const [bizView, setBizView] = useState(false) // 是否在"公众号"视图
+  const [selectedBizAccount, setSelectedBizAccount] = useState<BizAccount | null>(null)
   const [hasInitialMessages, setHasInitialMessages] = useState(false)
   const [isSessionSwitching, setIsSessionSwitching] = useState(false)
   const [noMessageTable, setNoMessageTable] = useState(false)
@@ -2691,6 +2720,9 @@ function ChatPage(props: ChatPageProps) {
     setConnected(false)
     setConnecting(false)
     setHasMoreMessages(true)
+    setFoldedView(false)
+    setBizView(false)
+    setSelectedBizAccount(null)
     setHasMoreLater(false)
     const scope = await resolveChatCacheScope()
     hydrateSessionListCache(scope)
@@ -3964,6 +3996,12 @@ function ChatPage(props: ChatPageProps) {
       setFoldedView(true)
       return
     }
+    // 点击公众号入口，切换到公众号视图
+    if (session.username === OFFICIAL_ACCOUNTS_VIRTUAL_ID) {
+      setBizView(true)
+      setSelectedBizAccount(null) // 切入时默认不选中任何公众号
+      return
+    }
     selectSessionById(session.username)
   }
 
@@ -4946,14 +4984,30 @@ function ChatPage(props: ChatPageProps) {
     const foldedGroups = sessions.filter(s => s.isFolded && !s.username.toLowerCase().includes('placeholder_foldgroup'))
     const hasFoldedGroups = foldedGroups.length > 0
 
-    const visible = sessions.filter(s => {
+    let visible = sessions.filter(s => {
       if (s.isFolded && !s.username.toLowerCase().includes('placeholder_foldgroup')) return false
       return true
     })
 
-    // 如果有折叠的群聊，但列表中没有入口，则插入入口
+    const bizEntry: ChatSession = {
+      username: OFFICIAL_ACCOUNTS_VIRTUAL_ID,
+      displayName: '公众号',
+      summary: '查看公众号历史消息',
+      type: 0,
+      sortTimestamp: 9999999999,  // 放到最前面？  目前还没有严格的对时间进行排序，  后面可以改一下
+      lastTimestamp: 0,
+      lastMsgType: 0,
+      unreadCount: 0,
+      isMuted: false,
+      isFolded: false
+    }
+
+    if (!visible.some(s => s.username === OFFICIAL_ACCOUNTS_VIRTUAL_ID)) {
+      visible.unshift(bizEntry)
+    }
+
     if (hasFoldedGroups && !visible.some(s => s.username.toLowerCase().includes('placeholder_foldgroup'))) {
-      // 找到最新的折叠消息
+
       const latestFolded = foldedGroups.reduce((latest, current) => {
         const latestTime = latest.sortTimestamp || latest.lastTimestamp
         const currentTime = current.sortTimestamp || current.lastTimestamp
@@ -6031,7 +6085,7 @@ function ChatPage(props: ChatPageProps) {
         ref={sidebarRef}
         style={{ width: sidebarWidth, minWidth: sidebarWidth, maxWidth: sidebarWidth }}
       >
-        <div className={`session-header session-header-viewport ${foldedView ? 'folded' : ''}`}>
+        <div className={`session-header session-header-viewport ${foldedView || bizView ? 'folded' : ''}`}>
           {/* 普通 header */}
           <div className="session-header-panel main-header">
             <div className="search-row">
@@ -6061,12 +6115,18 @@ function ChatPage(props: ChatPageProps) {
           {/* 折叠群 header */}
           <div className="session-header-panel folded-header">
             <div className="folded-view-header">
-              <button className="icon-btn back-btn" onClick={() => setFoldedView(false)}>
+              <button className="icon-btn back-btn" onClick={() => {
+                setFoldedView(false)
+                setBizView(false)
+              }}>
                 <ChevronLeft size={18} />
               </button>
               <span className="folded-view-title">
-                <Users size={14} />
-                折叠的群聊
+                {foldedView ? (
+                    <><Users size={14} /> 折叠的群聊</>
+                ) : bizView ? (
+                    <><Newspaper size={14} /> 订阅号/服务号</>
+                ) : null}
               </span>
             </div>
           </div>
@@ -6173,7 +6233,7 @@ function ChatPage(props: ChatPageProps) {
             ))}
           </div>
         ) : (
-          <div className={`session-list-viewport ${foldedView ? 'folded' : ''}`}>
+          <div className={`session-list-viewport ${foldedView || bizView ? 'folded' : ''}`}>
             {/* 普通会话列表 */}
             <div className="session-list-panel main-panel">
               {Array.isArray(filteredSessions) && filteredSessions.length > 0 ? (
@@ -6199,7 +6259,7 @@ function ChatPage(props: ChatPageProps) {
                     <SessionItem
                       key={session.username}
                       session={session}
-                      isActive={currentSessionId === session.username}
+                      isActive={currentSessionId === session.username || (bizView && session.username === OFFICIAL_ACCOUNTS_VIRTUAL_ID)}
                       onSelect={handleSelectSession}
                       formatTime={formatSessionTime}
                       searchKeyword={searchKeyword}
@@ -6218,24 +6278,36 @@ function ChatPage(props: ChatPageProps) {
 
             {/* 折叠群列表 */}
             <div className="session-list-panel folded-panel">
-              {foldedSessions.length > 0 ? (
-                <div className="session-list">
-                  {foldedSessions.map(session => (
-                    <SessionItem
-                      key={session.username}
-                      session={session}
-                      isActive={currentSessionId === session.username}
-                      onSelect={handleSelectSession}
-                      formatTime={formatSessionTime}
-                      searchKeyword={searchKeyword}
+              {foldedView && (
+                  foldedSessions.length > 0 ? (
+                      <div className="session-list">
+                        {foldedSessions.map(session => (
+                            <SessionItem
+                                key={session.username}
+                                session={session}
+                                isActive={currentSessionId === session.username || (bizView && session.username === OFFICIAL_ACCOUNTS_VIRTUAL_ID)}
+                                onSelect={handleSelectSession}
+                                formatTime={formatSessionTime}
+                                searchKeyword={searchKeyword}
+                            />
+                        ))}
+                      </div>
+                  ) : (
+                      <div className="empty-sessions">
+                        <Users size={32} />
+                        <p>没有折叠的群聊</p>
+                      </div>
+                  )
+              )}
+
+              {bizView && (
+                  <div style={{ height: '100%', overflowY: 'auto' }}>
+                    <BizAccountList
+                        onSelect={setSelectedBizAccount}
+                        selectedUsername={selectedBizAccount?.username}
+                        searchKeyword={searchKeyword}
                     />
-                  ))}
-                </div>
-              ) : (
-                <div className="empty-sessions">
-                  <Users size={32} />
-                  <p>没有折叠的群聊</p>
-                </div>
+                  </div>
               )}
             </div>
           </div>
@@ -6247,9 +6319,11 @@ function ChatPage(props: ChatPageProps) {
 
       {/* 右侧消息区域 */}
       <div className="message-area">
-        {currentSession ? (
-          <>
-            <div className="message-header">
+        {bizView ? (
+            <BizMessageArea account={selectedBizAccount} />
+        ) : currentSession ? (
+            <>
+              <div className="message-header">
               <Avatar
                 src={currentSession.avatarUrl}
                 name={currentSession.displayName || currentSession.username}
