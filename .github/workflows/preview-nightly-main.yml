@@ -369,4 +369,4 @@ jobs:
           > 如某个平台链接暂未生成，请前往[发布页]($RELEASE_PAGE)查看最新资源
           EOF
 
-          gh release edit "$TAG" --repo "$REPO" --notes-file preview_release_notes.md
+          gh release edit "$TAG" --repo "$REPO" --title "Preview Nightly Build" --notes-file preview_release_notes.md --prerelease
